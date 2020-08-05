@@ -29,7 +29,6 @@ public class PostgreSQLDatabase implements Database {
 
 	private String connectionString;
 	private Connection connection = null;
-	private static volatile boolean isFunctionInitialized = false;
 
 	public PostgreSQLDatabase(String connectionString) {
 		this.connectionString = connectionString;

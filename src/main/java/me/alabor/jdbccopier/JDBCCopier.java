@@ -6,6 +6,7 @@ import java.awt.event.ActionEvent;
 import java.awt.event.ActionListener;
 import java.io.FileInputStream;
 import java.io.IOException;
+import java.io.PrintStream;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
@@ -41,6 +42,10 @@ public class JDBCCopier {
 		if (args != null && args.length == 1)
 			configPath = args[0];
 
+		PrintStream out = new PrintStream("jdbc-copier.log");
+		System.setOut(out);
+		System.setErr(out);
+
 		Properties properties = loadProperties(configPath);
 		String sourceType = properties.getProperty("source.type", "");
 		String sourceConnectionString = properties.getProperty("source.connectionString", "");
@@ -66,10 +71,15 @@ public class JDBCCopier {
 
 		/* Run: */
 		try {
+
+			System.out.println("initializing...");
+
 			DatabaseFactory databaseFactory = new DatabaseFactory();
 			Database sourceDatabase = databaseFactory.createDatabase(sourceType, sourceConnectionString);
 
 			sourceDatabase.connect();
+
+			System.out.println("source connection ok...");
 
 			Queue<Table> pool = new ConcurrentLinkedQueue<Table>(
 					sourceDatabase.getTables(includeTables, excludeTables));
@@ -116,13 +126,22 @@ public class JDBCCopier {
 						for (Thread t : workers)
 							t.start();
 
-						for (Thread t : workers)
-							t.join();
+						new Thread() {
+							public void run() {
+								for (Thread t : workers) {
+									try {
+										t.join();
+									} catch (InterruptedException ie) {
+										ie.printStackTrace();
+									}
+								}
 
-						if (isTargetPsql) {
-							PostgreSQLDatabase psql = (PostgreSQLDatabase) targetDatabase;
-							psql.disableAllTriggers(false);
-						}
+								if (isTargetPsql) {
+									PostgreSQLDatabase psql = (PostgreSQLDatabase) targetDatabase;
+									psql.disableAllTriggers(false);
+								}
+							}
+						}.start();
 
 					} catch (Exception ex) {
 						ex.printStackTrace();

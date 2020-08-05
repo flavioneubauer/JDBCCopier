@@ -117,7 +117,9 @@ public abstract class AbstractCopier implements Copier {
 				targetStatement = setPreparedStatementParameters(targetStatement, table, sourceContents);
 				targetStatement.execute();
 			}
+
 		} catch (Exception e) {
+			fireError(table, e);
 			e.printStackTrace();
 		}
 	}
