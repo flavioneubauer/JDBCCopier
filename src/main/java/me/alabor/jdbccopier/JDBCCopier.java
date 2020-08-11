@@ -38,9 +38,14 @@ public class JDBCCopier {
 	public static void main(String[] args) throws InterruptedException, IOException {
 		/* Config: */
 		// default
+		boolean autoStart = false;
 		String configPath = "config.properties";
 		if (args != null && args.length == 1)
 			configPath = args[0];
+		else if (args != null && args.length == 2) {
+			configPath = args[0];
+			autoStart = args[1].trim().endsWith("--start");
+		}
 
 		PrintStream out = new PrintStream("jdbc-copier.log");
 		System.setOut(out);
@@ -81,100 +86,131 @@ public class JDBCCopier {
 
 			System.out.println("source connection ok...");
 
+			System.out.println("building tables pool ( this can take a while )...");
 			Queue<Table> pool = new ConcurrentLinkedQueue<Table>(
 					sourceDatabase.getTables(includeTables, excludeTables));
 			final List<Thread> workers = new ArrayList<Thread>(maxWorkers + 1);
-			List<WorkerStatusPanel> statusPanels = new ArrayList<WorkerStatusPanel>(maxWorkers + 1);
-			ConsoleCopierListener console = new ConsoleCopierListener(false);
-
-			/* Create Workers & Statuspanels: */
 			CopierFactory copierFactory = new CopierFactory(databaseFactory);
 			List<Copier> pooledCopiers = copierFactory.createPooledCopiers(sourceType, sourceConnectionString,
 					targetType, targetConnectionString, maxWorkers, pool);
+			ConsoleCopierListener console = new ConsoleCopierListener(false);
 
-			for (Copier copier : pooledCopiers) {
-				WorkerStatusPanel statusPanel = new WorkerStatusPanel();
+			if (autoStart) {
 
-				copier.addCopierListener(statusPanel);
-				copier.addCopierListener(console);
-				workers.add(new Thread(new CopierTask(copier)));
-				statusPanels.add(statusPanel);
-			}
-
-			/* Create and show frame: */
-			JFrame frame = new JFrame("JDBCCopier");
-			frame.setMinimumSize(new Dimension(800, 500));
-			frame.setSize(frame.getMinimumSize());
-			frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
-
-			final JButton btnStart = new JButton("Start");
-			btnStart.addActionListener(new ActionListener() {
-				@Override
-				public void actionPerformed(ActionEvent e) {
-					btnStart.setEnabled(false);
-
-					try {
-						Database targetDatabase = databaseFactory.createDatabase(targetType, targetConnectionString);
-						boolean isTargetPsql = targetType.toLowerCase().contains("postgres");
-						if (isTargetPsql) {
-							PostgreSQLDatabase psql = (PostgreSQLDatabase) targetDatabase;
-							psql.connect();
-							psql.prepareFunctions();
-							psql.disableAllTriggers(true);
-						}
-
-						for (Thread t : workers)
-							t.start();
-
-						new Thread() {
-							public void run() {
-								for (Thread t : workers) {
-									try {
-										t.join();
-									} catch (InterruptedException ie) {
-										ie.printStackTrace();
-									}
-								}
-
-								if (isTargetPsql) {
-									PostgreSQLDatabase psql = (PostgreSQLDatabase) targetDatabase;
-									psql.disableAllTriggers(false);
-								}
-							}
-						}.start();
-
-					} catch (Exception ex) {
-						ex.printStackTrace();
-					}
+				for (Copier copier : pooledCopiers) {
+					copier.addCopierListener(console);
+					workers.add(new Thread(new CopierTask(copier)));
 				}
-			});
 
-			JPanel statusContainer = new JPanel(new ListLayout());
-			for (WorkerStatusPanel workerStatusPanel : statusPanels) {
-				statusContainer.add(workerStatusPanel);
+				System.out.println("autoStarting with configs:");
+				System.out.println(getFilteredProperties(properties));
+				System.out.println("auto-starting copy...");
+				doCopy(databaseFactory, targetType, targetConnectionString, workers, true);
+
+			} else {
+				List<WorkerStatusPanel> statusPanels = new ArrayList<WorkerStatusPanel>(maxWorkers + 1);
+				for (Copier copier : pooledCopiers) {
+					WorkerStatusPanel statusPanel = new WorkerStatusPanel();
+
+					copier.addCopierListener(statusPanel);
+					copier.addCopierListener(console);
+					workers.add(new Thread(new CopierTask(copier)));
+					statusPanels.add(statusPanel);
+				}
+
+				/* Create and show frame: */
+				JFrame frame = new JFrame("JDBCCopier");
+				frame.setMinimumSize(new Dimension(800, 500));
+				frame.setSize(frame.getMinimumSize());
+				frame.setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
+
+				final JButton btnStart = new JButton("Start");
+				btnStart.addActionListener(new ActionListener() {
+					@Override
+					public void actionPerformed(ActionEvent e) {
+						btnStart.setEnabled(false);
+
+						try {
+							doCopy(databaseFactory, targetType, targetConnectionString, workers, false);
+						} catch (Exception ex) {
+							ex.printStackTrace();
+						}
+					}
+				});
+
+				JPanel statusContainer = new JPanel(new ListLayout());
+				for (WorkerStatusPanel workerStatusPanel : statusPanels) {
+					statusContainer.add(workerStatusPanel);
+				}
+
+				JTextArea txtProperties = new JTextArea(getFilteredProperties(properties));
+				txtProperties.setSize(800, 300);
+
+				JPanel contentPane = new JPanel(new BorderLayout());
+				contentPane.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+				contentPane.add(btnStart, BorderLayout.NORTH);
+
+				JPanel info = new JPanel(new BorderLayout());
+				info.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
+				info.add(txtProperties, BorderLayout.NORTH);
+				info.add(new JScrollPane(statusContainer), BorderLayout.CENTER);
+
+				contentPane.add(info, BorderLayout.CENTER);
+
+				frame.setContentPane(contentPane);
+				frame.setVisible(true);
+
 			}
-
-			JTextArea txtProperties = new JTextArea(
-					properties.toString().replace(", ", ",\n").replace("{", "").replace("}", ""));
-			txtProperties.setSize(800, 300);
-
-			JPanel contentPane = new JPanel(new BorderLayout());
-			contentPane.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
-			contentPane.add(btnStart, BorderLayout.NORTH);
-
-			JPanel info = new JPanel(new BorderLayout());
-			info.setBorder(BorderFactory.createEmptyBorder(5, 5, 5, 5));
-			info.add(txtProperties, BorderLayout.NORTH);
-			info.add(new JScrollPane(statusContainer), BorderLayout.CENTER);
-
-			contentPane.add(info, BorderLayout.CENTER);
-
-			frame.setContentPane(contentPane);
-			frame.setVisible(true);
 
 		} catch (Exception e) {
 			e.printStackTrace();
 		}
+	}
+
+	private static String getFilteredProperties(Properties properties) {
+		return properties.toString().replace(", ", ",\n").replace("{", "").replace("}", "");
+	}
+
+	private static void doCopy(DatabaseFactory databaseFactory, String targetType, String targetConnectionString,
+			List<Thread> workers, boolean autoStart) throws Exception {
+		Database targetDatabase = databaseFactory.createDatabase(targetType, targetConnectionString);
+		boolean isTargetPsql = targetType.toLowerCase().contains("postgres");
+		if (isTargetPsql) {
+			PostgreSQLDatabase psql = (PostgreSQLDatabase) targetDatabase;
+			psql.connect();
+			psql.prepareFunctions();
+			System.out.println("disabling triggers....");
+			psql.disableAllTriggers(true);
+			System.out.println("triggers disabled....");
+		}
+
+		System.out.println("starting workers....");
+		for (Thread t : workers)
+			t.start();
+
+		new Thread() {
+			public void run() {
+				for (Thread t : workers) {
+					try {
+						t.join();
+					} catch (InterruptedException ie) {
+						ie.printStackTrace();
+					}
+				}
+
+				if (isTargetPsql) {
+					PostgreSQLDatabase psql = (PostgreSQLDatabase) targetDatabase;
+					System.out.println("restoring triggers....");
+					psql.disableAllTriggers(false);
+					System.out.println("triggers restored....");
+				}
+
+				if (autoStart) {
+					System.out.println("ending....");
+					System.exit(0);
+				}
+			}
+		}.start();
 	}
 
 	/**
